@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D Metaverse Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; touch-action: none; font-family: 'Inter', sans-serif; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+        #ui-layer { position: absolute; z-index: 10; pointer-events: none; }
+        
+        #glb-upload { display: none; }
+        
+        .glass-panel {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Mobile Controls */
+        #joystick-zone {
+            position: absolute; bottom: 30px; left: 30px;
+            width: 120px; height: 120px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%; display: none; touch-action: none; pointer-events: auto;
+        }
+        #joystick-knob {
+            position: absolute; top: 35px; left: 35px;
+            width: 50px; height: 50px;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 50%; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+        #jump-btn {
+            position: absolute; bottom: 30px; right: 30px;
+            width: 80px; height: 80px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 50%; display: none; touch-action: none;
+            text-align: center; line-height: 80px; color: white; font-weight: bold; pointer-events: auto;
+        }
+        #shoot-btn {
+            position: absolute; bottom: 130px; right: 30px;
+            width: 80px; height: 80px;
+            background: rgba(255, 100, 100, 0.6);
+            border-radius: 50%; display: none; touch-action: none;
+            text-align: center; line-height: 80px; color: white; font-weight: bold; pointer-events: auto;
+        }
+        
+        @media (max-width: 768px) {
+            #joystick-zone, #jump-btn, #shoot-btn { display: block; }
+            #instructions { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer" class="absolute top-0 left-0 w-full h-full p-4 flex flex-col justify-between">
+        <div class="flex justify-between items-start">
+            <div class="glass-panel text-white p-5 rounded-xl pointer-events-auto max-w-sm">
+                <h1 class="text-2xl font-extrabold mb-3 text-yellow-400">3D Metaverse</h1>
+                <div id="instructions" class="text-sm space-y-2 text-gray-200">
+                    <p><b class="text-white">W,A,S,D</b>: 이동 | <b class="text-white">L-Shift</b>: 점프/상승</p>
+                    <p><b class="text-white">Space</b>: 총알 발사</p>
+                    <p><b class="text-white">마우스 클릭</b>: 시점 회전 (ESC 종료)</p>
+                    <p><b class="text-white">Tab</b>: 1/3인칭 | <b class="text-white">F1~F4</b>: 카메라 뷰</p>
+                    <p><b class="text-white">1, 2, 3</b>: Walk / Fly / Ghost 모드</p>
+                    <p><b class="text-white">O</b>: 라이노 GLB 모델 업로드</p>
+                </div>
+                <div class="mt-4 font-mono text-green-400 font-bold bg-black/30 p-2 rounded text-center">
+                    Current Mode: <span id="mode-text" class="text-white">Walk</span>
+                </div>
+            </div>
+
+            <div class="space-y-3 pointer-events-auto flex flex-col items-end">
+                <input type="file" id="glb-upload" accept=".glb">
+                <button onclick="document.getElementById('glb-upload').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition transform hover:scale-105">
+                    라이노 GLB 불러오기 (O)
+                </button>
+                <button onclick="toggleView()" id="view-btn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition">
+                    View: 3rd Person (Tab)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Controls -->
+    <div id="joystick-zone"><div id="joystick-knob"></div></div>
+    <div id="jump-btn">JUMP</div>
+    <div id="shoot-btn">FIRE</div>
+
+    <div id="canvas-container"></div>
+
+    <!-- Three.js 및 물리/로더 라이브러리 로드 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/math/Capsule.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/math/Octree.js"></script>
+
+    <script>
+        const container = document.getElementById('canvas-container');
+
+        // Scene Setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        scene.fog = new THREE.Fog(0x87CEEB, 20, 300);
+
+        // Camera Setup
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.rotation.order = 'YXZ';
+
+        // Renderer Setup
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(50, 100, 50);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.camera.top = 250;
+        directionalLight.shadow.camera.bottom = -250;
+        directionalLight.shadow.camera.left = -250;
+        directionalLight.shadow.camera.right = 250;
+        directionalLight.shadow.camera.near = 0.1;
+        directionalLight.shadow.camera.far = 500;
+        directionalLight.shadow.mapSize.width = 2048;
+        directionalLight.shadow.mapSize.height = 2048;
+        scene.add(directionalLight);
+
+        // Physics variables
+        const worldOctree = new THREE.Octree();
+        const clock = new THREE.Clock();
+        const bullets = [];
+        let glTFObjects = [];
+
+        // 500x500 Floor
+        const floorGeometry = new THREE.PlaneGeometry(500, 500);
+        const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x4caf50, roughness: 0.8, metalness: 0.1 });
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+        worldOctree.fromGraphNode(floor); // 바닥을 물리 엔진에 등록
+
+        // 500x500 Grid
+        const gridHelper = new THREE.GridHelper(500, 100, 0x2e7d32, 0x2e7d32);
+        gridHelper.position.y = 0.01;
+        scene.add(gridHelper);
+
+        // Avatar (Pikachu) Setup
+        const avatarGroup = new THREE.Group();
+        scene.add(avatarGroup);
+
+        const pikaMat = new THREE.MeshStandardMaterial({ color: 0xffd700, roughness: 0.5 }); // Yellow
+        const blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        const redMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+
+        // Body (Stretched sphere instead of Capsule for r128 compatibility)
+        const bodyGeo = new THREE.SphereGeometry(0.5, 16, 16);
+        const body = new THREE.Mesh(bodyGeo, pikaMat);
+        body.scale.set(1, 1.5, 1);
+        body.position.y = 0.75;
+        body.castShadow = true;
+        avatarGroup.add(body);
+
+        // Head
+        const headGeo = new THREE.SphereGeometry(0.4, 16, 16);
+        const head = new THREE.Mesh(headGeo, pikaMat);
+        head.position.y = 1.6;
+        head.castShadow = true;
+        avatarGroup.add(head);
+
+        // Ears
+        const earGeo = new THREE.ConeGeometry(0.1, 0.4, 8);
+        const earL = new THREE.Mesh(earGeo, blackMat);
+        earL.position.set(-0.25, 1.9, 0);
+        earL.rotation.z = Math.PI / 6;
+        const earR = new THREE.Mesh(earGeo, blackMat);
+        earR.position.set(0.25, 1.9, 0);
+        earR.rotation.z = -Math.PI / 6;
+        avatarGroup.add(earL);
+        avatarGroup.add(earR);
+
+        // Cheeks
+        const cheekGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.02, 16);
+        const cheekL = new THREE.Mesh(cheekGeo, redMat);
+        cheekL.position.set(-0.2, 1.55, 0.35);
+        cheekL.rotation.x = Math.PI / 2;
+        const cheekR = cheekL.clone();
+        cheekR.position.set(0.2, 1.55, 0.35);
+        avatarGroup.add(cheekL);
+        avatarGroup.add(cheekR);
+
+        // Tail
+        const tailGeo = new THREE.BoxGeometry(0.1, 0.6, 0.2);
+        const tail = new THREE.Mesh(tailGeo, pikaMat);
+        tail.position.set(0, 0.8, -0.5);
+        tail.rotation.x = -Math.PI / 4;
+        avatarGroup.add(tail);
+
+        // Player Physics & State
+        const playerCollider = new THREE.Capsule(new THREE.Vector3(0, 0.5, 0), new THREE.Vector3(0, 1.5, 0), 0.5);
+        const playerVelocity = new THREE.Vector3();
+        const playerDirection = new THREE.Vector3();
+        let playerOnFloor = false;
+        
+        let GRAVITY = 30; // 기본 중력
+        const STEPS_PER_FRAME = 5;
+
+        let isThirdPerson = true;
+        let currentMode = 'walk'; // walk, fly, ghost
+        let cameraViewMode = 'free'; // free, top, front, right, left
+
+        function setMode(mode) {
+            const modeText = document.getElementById('mode-text');
+            
+            if (currentMode === 'fly' && (mode === 'walk' || mode === 'ghost')) {
+                // Fly에서 다른 모드로 갈 때 중력을 3배 약하게 (서서히 낙하)
+                GRAVITY = 10; 
+            } else if (mode === 'fly') {
+                // Walk에서 Fly로 갈 때 순간이동(팝업)
+                if (currentMode === 'walk') {
+                    playerCollider.translate(new THREE.Vector3(0, 10, 0));
+                }
+                playerVelocity.y = 0;
+            }
+
+            currentMode = mode;
+            modeText.innerText = mode.charAt(0).toUpperCase() + mode.slice(1);
+            
+            // Ghost 모드 시 반투명 처리
+            const isGhost = mode === 'ghost';
+            avatarGroup.traverse((child) => {
+                if (child.isMesh) {
+                    child.material.transparent = true;
+                    child.material.opacity = isGhost ? 0.4 : 1.0;
+                }
+            });
+        }
+
+        function setCameraView(view) {
+            cameraViewMode = view;
+            if (view !== 'free') {
+                isThirdPerson = true; // 강제 3인칭
+                document.getElementById('view-btn').innerText = `View: ${view.toUpperCase()}`;
+            } else {
+                document.getElementById('view-btn').innerText = `View: ${isThirdPerson ? '3rd Person' : '1st Person'}`;
+            }
+        }
+
+        function toggleView() {
+            cameraViewMode = 'free'; // 뷰 모드 해제
+            isThirdPerson = !isThirdPerson;
+            document.getElementById('view-btn').innerText = isThirdPerson ? 'View: 3rd Person' : 'View: 1st Person';
+            avatarGroup.visible = isThirdPerson;
+        }
+
+        // Input Handling
+        const keyStates = {};
+        document.addEventListener('keydown', (event) => {
+            if(event.code === 'Tab') { event.preventDefault(); toggleView(); }
+            
+            keyStates[event.code] = true;
+
+            // 모드 변경 단축키
+            if(event.code === 'Digit1') setMode('walk');
+            if(event.code === 'Digit2') setMode('fly');
+            if(event.code === 'Digit3') setMode('ghost');
+
+            // 카메라 뷰
+            if(event.code === 'F1') { event.preventDefault(); setCameraView('top'); }
+            if(event.code === 'F2') { event.preventDefault(); setCameraView('front'); }
+            if(event.code === 'F3') { event.preventDefault(); setCameraView('right'); }
+            if(event.code === 'F4') { event.preventDefault(); setCameraView('left'); }
+
+            // O key load GLB
+            if(event.code === 'KeyO' || event.key === 'o') {
+                document.getElementById('glb-upload').click();
+            }
+
+            // Space key to shoot
+            if(event.code === 'Space') {
+                event.preventDefault();
+                shootBullet();
+            }
+        });
+        document.addEventListener('keyup', (event) => {
+            keyStates[event.code] = false;
+        });
+
+        // Mouse Look (Pointer Lock)
+        renderer.domElement.addEventListener('mousedown', (event) => {
+            if (document.pointerLockElement !== document.body) {
+                document.body.requestPointerLock().catch(()=>{});
+            } else if (event.button === 0) { 
+                // 좌클릭 슈팅
+                shootBullet();
+            }
+        });
+
+        document.body.addEventListener('mousemove', (event) => {
+            if (document.pointerLockElement === document.body && cameraViewMode === 'free') {
+                camera.rotation.y -= event.movementX * 0.002;
+                camera.rotation.x -= event.movementY * 0.002;
+                camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+            }
+        });
+
+        // GLB Loader
+        const loader = new THREE.GLTFLoader();
+        document.getElementById('glb-upload').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const url = URL.createObjectURL(file);
+            loader.load(url, (gltf) => {
+                const object = gltf.scene;
+                
+                // 캐릭터가 바라보는 정면 10만큼 거리 계산
+                const forward = getForwardVector();
+                const spawnPos = playerCollider.end.clone();
+                spawnPos.y = 0; // 바닥 높이
+                spawnPos.add(forward.multiplyScalar(10));
+                
+                object.position.copy(spawnPos);
+
+                // 바닥(y=0)에 딱 맞게 정렬 (BoundingBox 활용)
+                const box = new THREE.Box3().setFromObject(object);
+                const bottomY = box.min.y;
+                object.position.y -= bottomY; 
+
+                scene.add(object);
+                glTFObjects.push(object); // 총알 파괴 타겟으로 추가
+
+                // 물리 옥트리에 등록
+                worldOctree.fromGraphNode(object);
+            });
+        });
+
+        const bulletRaycaster = new THREE.Raycaster();
+
+        function shootBullet() {
+            const bulletGeo = new THREE.SphereGeometry(0.2, 8, 8);
+            const bulletMat = new THREE.MeshBasicMaterial({ color: 0xff6600 });
+            const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+            
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            
+            const startPos = playerCollider.end.clone(); 
+            startPos.add(forward.multiplyScalar(1.0));
+            
+            bulletMesh.position.copy(startPos);
+            scene.add(bulletMesh);
+
+            const bulletVelocity = forward.multiplyScalar(60); 
+            const bulletCollider = new THREE.Sphere(startPos.clone(), 0.2); 
+
+            bullets.push({
+                mesh: bulletMesh,
+                velocity: bulletVelocity,
+                collider: bulletCollider,
+                life: 3.0
+            });
+        }
+
+        function updateBullets(deltaTime) {
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const b = bullets[i];
+                b.life -= deltaTime;
+
+                const previousPosition = b.mesh.position.clone();
+                const deltaVec = b.velocity.clone().multiplyScalar(deltaTime);
+                b.mesh.position.add(deltaVec);
+                b.collider.center.copy(b.mesh.position);
+
+                // 바닥(Y=0)은 무시하고 그냥 지나감
+                if (b.mesh.position.y <= 0) {
+                     b.mesh.position.y = 0.2; 
+                     b.collider.center.copy(b.mesh.position);
+                }
+
+                let bulletHitObject = false;
+
+                // 1. 물체/가구 파괴 로직
+                const direction = b.velocity.clone().normalize();
+                const distance = deltaVec.length();
+                bulletRaycaster.set(previousPosition, direction);
+                
+                const intersects = bulletRaycaster.intersectObjects(glTFObjects, true);
+                
+                if (intersects.length > 0 && intersects[0].distance <= distance) {
+                    let hitObject = intersects[0].object;
+                    
+                    while(hitObject.parent && hitObject.parent.type !== "Scene" && !glTFObjects.includes(hitObject)) {
+                        hitObject = hitObject.parent;
+                    }
+
+                    scene.remove(hitObject);
+                    glTFObjects = glTFObjects.filter(obj => obj !== hitObject);
+                    
+                    // 옥트리 재계산
+                    worldOctree.clear();
+                    worldOctree.fromGraphNode(floor);
+                    glTFObjects.forEach(obj => worldOctree.fromGraphNode(obj));
+
+                    bulletHitObject = true;
+                }
+
+                // 2. 벽(옥트리) 튕기기
+                if (!bulletHitObject) {
+                    const hit = worldOctree.sphereIntersect(b.collider);
+                    if (hit) {
+                        // 반사
+                        const dot = b.velocity.dot(hit.normal);
+                        b.velocity.sub(hit.normal.clone().multiplyScalar(2 * dot));
+                        b.mesh.position.add(hit.normal.multiplyScalar(hit.depth));
+                    }
+                }
+
+                if (bulletHitObject || b.life <= 0) {
+                    scene.remove(b.mesh);
+                    bullets.splice(i, 1);
+                }
+            }
+        }
+
+        function playerCollisions() {
+            if(currentMode === 'ghost') return; 
+
+            const result = worldOctree.capsuleIntersect(playerCollider);
+            playerOnFloor = false;
+
+            if (result) {
+                if (currentMode === 'fly') {
+                    // 플라이 모드: 벽이나 바닥에 부딪히면 튕겨나감
+                    const dot = playerVelocity.dot(result.normal);
+                    if (dot < 0) {
+                        playerVelocity.sub(result.normal.clone().multiplyScalar(2 * dot));
+                        playerVelocity.multiplyScalar(0.8);
+                    }
+                } else {
+                    // 워크 모드: 벽 미끄러짐 및 바닥 안착
+                    playerOnFloor = result.normal.y > 0.5;
+                    if (playerOnFloor) {
+                        GRAVITY = 30; // 바닥에 닿으면 중력 원상복구
+                    }
+                    if (!playerOnFloor) {
+                        playerVelocity.addScaledVector(result.normal, -result.normal.dot(playerVelocity));
+                    }
+                }
+                playerCollider.translate(result.normal.multiplyScalar(result.depth));
+            }
+        }
+
+        function getForwardVector() {
+            camera.getWorldDirection(playerDirection);
+            playerDirection.y = 0;
+            playerDirection.normalize();
+            return playerDirection.clone();
+        }
+
+        function getSideVector() {
+            camera.getWorldDirection(playerDirection);
+            playerDirection.y = 0;
+            playerDirection.normalize();
+            playerDirection.cross(camera.up);
+            return playerDirection.clone();
+        }
+
+        function controls(deltaTime) {
+            const speedDelta = deltaTime * (playerOnFloor ? 25 : 8);
+            
+            // F1~F4 고정뷰일때는 절대축 기준으로 이동
+            if (cameraViewMode !== 'free') {
+                if (keyStates['KeyW']) playerVelocity.z -= speedDelta;
+                if (keyStates['KeyS']) playerVelocity.z += speedDelta;
+                if (keyStates['KeyA']) playerVelocity.x -= speedDelta;
+                if (keyStates['KeyD']) playerVelocity.x += speedDelta;
+                return;
+            }
+
+            if (currentMode === 'walk') {
+                if (keyStates['KeyW']) playerVelocity.add(getForwardVector().multiplyScalar(speedDelta));
+                if (keyStates['KeyS']) playerVelocity.add(getForwardVector().multiplyScalar(-speedDelta));
+                if (keyStates['KeyA']) playerVelocity.add(getSideVector().multiplyScalar(-speedDelta));
+                if (keyStates['KeyD']) playerVelocity.add(getSideVector().multiplyScalar(speedDelta));
+                
+                if (!playerOnFloor) {
+                    playerVelocity.y -= GRAVITY * deltaTime;
+                } else {
+                    playerVelocity.y = 0; 
+                }
+
+                if (playerOnFloor && keyStates['ShiftLeft']) {
+                    playerVelocity.y = 15;
+                }
+
+            } else if (currentMode === 'fly' || currentMode === 'ghost') {
+                // Fly & Ghost: 마우스가 바라보는 3D 방향으로 이동 (무중력)
+                const flyDir = new THREE.Vector3();
+                camera.getWorldDirection(flyDir);
+
+                if (keyStates['KeyW']) playerVelocity.add(flyDir.clone().multiplyScalar(speedDelta));
+                if (keyStates['KeyS']) playerVelocity.add(flyDir.clone().multiplyScalar(-speedDelta));
+                if (keyStates['KeyA']) playerVelocity.add(getSideVector().multiplyScalar(-speedDelta));
+                if (keyStates['KeyD']) playerVelocity.add(getSideVector().multiplyScalar(speedDelta));
+                
+                // 편의상 ShiftLeft로 수직 상승 추가 (중력 무시)
+                if (keyStates['ShiftLeft']) {
+                    playerVelocity.y += speedDelta;
+                }
+            }
+
+            // 마찰력/저항
+            let damping = Math.exp(-4 * deltaTime) - 1;
+            if (!playerOnFloor && currentMode === 'walk') {
+                playerVelocity.addScaledVector(playerVelocity, damping * 0.1); 
+            } else {
+                playerVelocity.addScaledVector(playerVelocity, damping);
+            }
+        }
+
+        function updatePlayer(deltaTime) {
+            let damping = Math.exp(-4 * deltaTime) - 1;
+            
+            // 추락 방지
+            if (playerCollider.start.y < -10) {
+                playerCollider.start.set(0, 0.5, 0);
+                playerCollider.end.set(0, 1.5, 0);
+                playerCollider.radius = 0.5;
+                playerVelocity.set(0, 0, 0);
+            }
+
+            const deltaPosition = playerVelocity.clone().multiplyScalar(deltaTime);
+            playerCollider.translate(deltaPosition);
+
+            playerCollisions();
+
+            const center = playerCollider.end.clone();
+            
+            // 모델 회전 동기화 (Walk 모드일때만 Y축으로 회전, 아닐땐 카메라 회전 따라감)
+            if (cameraViewMode === 'free') {
+                const dir = getForwardVector();
+                const angle = Math.atan2(dir.x, dir.z);
+                avatarGroup.rotation.y = angle;
+            }
+            
+            avatarGroup.position.copy(playerCollider.start);
+            avatarGroup.position.y -= 0.5;
+
+            // 카메라 위치 설정 (뷰 모드에 따라)
+            if (cameraViewMode === 'top') {
+                camera.position.set(center.x, 100, center.z);
+                camera.lookAt(center.x, 0, center.z);
+            } else if (cameraViewMode === 'front') {
+                camera.position.set(center.x, center.y, center.z + 50);
+                camera.lookAt(center);
+            } else if (cameraViewMode === 'right') {
+                camera.position.set(center.x + 50, center.y, center.z);
+                camera.lookAt(center);
+            } else if (cameraViewMode === 'left') {
+                camera.position.set(center.x - 50, center.y, center.z);
+                camera.lookAt(center);
+            } else {
+                // Free Camera (1st / 3rd Person)
+                if (isThirdPerson) {
+                    const cameraOffset = new THREE.Vector3(0, 1, 4);
+                    cameraOffset.applyQuaternion(camera.quaternion);
+                    camera.position.copy(center).add(cameraOffset);
+                } else {
+                    camera.position.copy(center);
+                    camera.position.y += 0.2; // 눈높이 보정
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const deltaTime = Math.min(0.05, clock.getDelta()) / STEPS_PER_FRAME;
+
+            for (let i = 0; i < STEPS_PER_FRAME; i++) {
+                controls(deltaTime);
+                updatePlayer(deltaTime);
+                updateBullets(deltaTime);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Mobile joystick logic (간단 구현)
+        const joystickZone = document.getElementById('joystick-zone');
+        const joystickKnob = document.getElementById('joystick-knob');
+        let touchStartX, touchStartY;
+        
+        joystickZone.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const rect = joystickZone.getBoundingClientRect();
+            touchStartX = rect.left + 60;
+            touchStartY = rect.top + 60;
+            updateJoystick(touch);
+        });
+        joystickZone.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            updateJoystick(e.touches[0]);
+        });
+        joystickZone.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            joystickKnob.style.transform = `translate(0px, 0px)`;
+            keyStates['KeyW'] = false; keyStates['KeyS'] = false;
+            keyStates['KeyA'] = false; keyStates['KeyD'] = false;
+        });
+
+        function updateJoystick(touch) {
+            let dx = touch.clientX - touchStartX;
+            let dy = touch.clientY - touchStartY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if(dist > 35) { dx = (dx/dist)*35; dy = (dy/dist)*35; }
+            joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+
+            keyStates['KeyW'] = dy < -10; keyStates['KeyS'] = dy > 10;
+            keyStates['KeyA'] = dx < -10; keyStates['KeyD'] = dx > 10;
+        }
+
+        const jumpBtn = document.getElementById('jump-btn');
+        jumpBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keyStates['ShiftLeft'] = true; });
+        jumpBtn.addEventListener('touchend', (e) => { e.preventDefault(); keyStates['ShiftLeft'] = false; });
+
+        const shootBtn = document.getElementById('shoot-btn');
+        shootBtn.addEventListener('touchstart', (e) => { e.preventDefault(); shootBullet(); });
+
+        let lastTouchX, lastTouchY;
+        document.body.addEventListener('touchstart', (e) => {
+            if(e.target.id === 'joystick-zone' || e.target.id === 'joystick-knob' || e.target.id === 'jump-btn' || e.target.id === 'shoot-btn') return;
+            lastTouchX = e.touches[0].clientX;
+            lastTouchY = e.touches[0].clientY;
+        });
+        document.body.addEventListener('touchmove', (e) => {
+            if(e.target.id === 'joystick-zone' || e.target.id === 'joystick-knob' || e.target.id === 'jump-btn' || e.target.id === 'shoot-btn') return;
+            const touch = e.touches[0];
+            const dx = touch.clientX - lastTouchX;
+            const dy = touch.clientY - lastTouchY;
+            camera.rotation.y -= dx * 0.005;
+            camera.rotation.x -= dy * 0.005;
+            camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+            lastTouchX = touch.clientX;
+            lastTouchY = touch.clientY;
+        });
+
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
